@@ -487,6 +487,100 @@ static PyObject *Consumer_close (Handle *self, PyObject *ignore) {
 }
 
 
+/* Stats buffer printf */
+#define _st_printf(...) do {					\
+		ssize_t r;					\
+		ssize_t rem = size-of;				\
+		r = snprintf(buf+of, rem, __VA_ARGS__);	\
+		if (r >= rem) {					\
+			size *= 2;				\
+			rem = size-of;				\
+			buf = realloc(buf, size);		\
+			r = snprintf(buf+of, rem, __VA_ARGS__);	\
+		}						\
+		of += r;					\
+	} while (0)
+
+
+static PyObject *Consumer_describe_groups(Handle *self, PyObject *args,
+                                    PyObject *kwargs){
+        rd_kafka_resp_err_t err;
+        const struct rd_kafka_group_list *grplist;
+        int i;
+        double tmout = -1.0f;
+        char * group = NULL;
+        PyObject * rtn;
+        char  *buf;
+        size_t size = 1024*10;
+        size_t of = 0;
+        buf = malloc(size);
+        static char *kws[] = { "group", "timeout", NULL };
+        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|sd", kws, &group, &tmout))
+                return NULL;
+        
+        err = rd_kafka_list_groups(self->rk, group, &grplist, 10000);
+        if (err) {
+          cfl_PyErr_Format(err,
+               "Failed to acquire group list: : %s",
+               rd_kafka_err2str(err));
+           return NULL;
+        }
+
+        _st_printf("{");
+        for (i = 0 ; i < grplist->group_cnt ; i++) {
+                const struct rd_kafka_group_info *gi = &grplist->groups[i];
+                int j;
+                if (i!=0)
+                    _st_printf(",");
+                _st_printf("\"%s\": { \"name\": \"%s\","
+                          "\"state\": \"%s\","
+                          "\"error\": \"%s\","
+                          "\"protocol_type\": \"%s\","
+                          "\"protocol\": \"%s\","
+                          "\"members_cnt\": %d,"
+                          "\"broker\": \"%s:%d/%d\","
+                          "\"members\": { ",
+                          gi->group,
+                          gi->group,
+                          gi->state,
+                          rd_kafka_err2str(gi->err),
+                          gi->protocol_type,
+                          gi->protocol,
+                          gi->member_cnt,
+                          gi->broker.host, gi->broker.port, gi->broker.id
+                );
+
+                for (j = 0 ; j < gi->member_cnt ; j++) {
+                        const struct rd_kafka_group_member_info *mi;
+                        mi = &gi->members[j];
+                        if (j!=0)
+                            _st_printf(",");
+                        _st_printf("\"%s\": { "
+                                 "\"id\": \"%s\","
+                                 "\"client_id\": \"%s\","
+                                 "\"client_host\": \"%s\","
+                                 "\"metadata_size\": \"%d\","
+                                 "\"assignment_size\": \"%d\""
+                                 "}",
+                                 mi->member_id,
+                                 mi->member_id,
+                                 mi->client_id,
+                                 mi->client_host,
+                                 mi->member_metadata_size,
+                                 mi->member_assignment_size
+                        );
+                        
+                }
+                _st_printf("}}"); // End of members, end of group
+        }
+        _st_printf("}"); // End of groups
+        rd_kafka_group_list_destroy(grplist);
+        rtn = Py_BuildValue("s", buf);
+        free(buf);
+        return rtn;
+}
+
+
 static PyMethodDef Consumer_methods[] = {
 	{ "subscribe", (PyCFunction)Consumer_subscribe,
 	  METH_VARARGS|METH_KEYWORDS,
@@ -627,6 +721,20 @@ static PyMethodDef Consumer_methods[] = {
           "  :raises: KafkaException\n"
           "\n"
         },
+	{ "describe_groups", (PyCFunction)Consumer_describe_groups, 
+    METH_VARARGS|METH_KEYWORDS,
+    ".. py:function:: describe_groups([group=None], [timeout=None])\n"
+    "\n"
+    "  Retrieve group description for given group in the cluster.\n"
+    "  If no group is specified, returns all groups in the cluster.\n"
+    "\n"
+    "  :param str group: Consumer group to return description for."
+    "  :param float timeout: Request timeout.\n"
+    "  :returns: json string.\n"
+    "  :rtype: str\n"
+    "  :raises: KafkaException\n"
+    "\n"
+	},
 	{ "close", (PyCFunction)Consumer_close, METH_NOARGS,
 	  "\n"
 	  "  Close down and terminate the Kafka Consumer.\n"
